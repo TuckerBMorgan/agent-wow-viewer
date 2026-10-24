@@ -178,7 +178,6 @@ resource "aws_launch_template" "world_build" {
 
 output "viewer_launch_template" { value = aws_launch_template.viewer.id }
 output "viewer_subnet" { value = aws_subnet.viewer.id }
-output "world_build_subnet" { value = aws_subnet.viewer.id }
 output "world_build_template" { value = aws_launch_template.world_build.id }
 output "world_watch_image" { value = "${var.ecr_repository_url}:world-watch-9fc017d9-cb9fa4a8" }
 

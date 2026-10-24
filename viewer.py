@@ -79,7 +79,7 @@ def build(config):
     import shlex
     lines = '\n'.join(f'export {key}={shlex.quote(value)}' for key, value in env.items())
     script = script.replace('set -Eeuo pipefail', 'set -Eeuo pipefail\n' + lines, 1)
-    instance = start(config['world_build_template'], config['world_build_subnet'], script)
+    instance = start(config['world_build_template'], config['viewer_subnet'], script)
     state = dict(instance_id=instance, prefix=prefix, world_image=env['WORLD_IMAGE'])
     (ROOT / 'tmp/viewer-build.json').write_text(json.dumps(state, indent=2) + '\n')
     print(f'Builder {instance}; logs: s3://{env["BUCKET"]}/{prefix}/build.log', flush=True)

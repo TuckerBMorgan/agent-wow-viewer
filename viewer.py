@@ -421,7 +421,7 @@ def watch_request(instance, config, character):
                 print(f'Spectator camera command submitted for {character}.', flush=True)
                 return status
         time.sleep(5)
-    raise RuntimeError('Camera command was not confirmed within five minutes.')
+    raise RuntimeError('Camera command submission was not acknowledged within five minutes.')
 
 
 def ensure_available(instance, config, job_id=None):

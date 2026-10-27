@@ -172,9 +172,14 @@ for ($attempt=0; $attempt -lt 30; $attempt++) {
     Start-Sleep 1
 }
 if (!$portsReady) { throw 'Game tunnels did not become ready.' }
-if ($shell.AppActivate($p.Id)) {
+for ($focusAttempt=0; $focusAttempt -lt 5; $focusAttempt++) {
+    if ($p.HasExited) { throw 'The game exited before automatic login.' }
+    $shell.AppActivate($p.Id) | Out-Null
     Start-Sleep 1
-    if (![ViewerWindow]::FocusPassword($p.MainWindowHandle)) { throw 'Could not focus the game password field.' }
+    $p.Refresh()
+    if ([ViewerWindow]::FocusPassword($p.MainWindowHandle)) { break }
+}
+if ($focusAttempt -lt 5) {
     Start-Sleep -Milliseconds 250
     $shell.SendKeys('^a')
     $shell.SendKeys($account.password)

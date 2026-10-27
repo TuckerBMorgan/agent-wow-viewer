@@ -1,95 +1,21 @@
-param([string]$Bucket, [string]$Region)
+param([string]$Bucket, [string]$Region, [string]$Recipe)
 $ErrorActionPreference = 'Stop'
 Start-Service AmazonSSMAgent
 if (Test-Path C:\viewer\configured.flag) { return }
 $ProgressPreference = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-New-Item -ItemType Directory -Force C:\viewer | Out-Null
 Start-Transcript C:\viewer\setup.log -Append
-$stop = New-ScheduledTaskAction -Execute shutdown.exe -Argument '/s /f /t 0'
-Register-ScheduledTask 'ViewerSafetyStop' -Action $stop -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(6)) -User SYSTEM -RunLevel Highest -Force | Out-Null
-
-function Install-Msi($Url, $Name, $Extra = '') {
-    Invoke-WebRequest -UseBasicParsing $Url -OutFile "C:\viewer\$Name.msi"
-    $p = Start-Process msiexec.exe -ArgumentList "/i C:\viewer\$Name.msi /qn /norestart $Extra" -Wait -PassThru
-    if ($p.ExitCode -notin @(0, 1638, 3010)) { throw "$Name installation failed ($($p.ExitCode))." }
-}
-
-Write-Output 'Installing AWS connection tools and Amazon DCV.'
-Install-Msi 'https://awscli.amazonaws.com/AWSCLIV2.msi' 'awscli'
-Invoke-WebRequest -UseBasicParsing 'https://s3.amazonaws.com/session-manager-downloads/plugin/latest/windows/SessionManagerPluginSetup.exe' -OutFile C:\viewer\ssm.exe
-Start-Process C:\viewer\ssm.exe -ArgumentList '/S' -Wait
-Install-Msi 'https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-server-x64-Release.msi' 'dcv' 'DISABLE_FIREWALL=1 DISABLE_AUTOMATIC_SESSION_CREATION=1'
+$image = Get-Content C:\viewer\image.json | ConvertFrom-Json
+if ($image.recipe -ne $Recipe -or $image.client_build -ne 12340) { throw 'Viewer image does not match this checkout; rebuild with --build-client.' }
+if ($image.renderer -ne 'nvidia') { throw 'The viewer requires the GPU client image.' }
+$game = (Get-Content C:\viewer\game-path.txt).Trim()
+if ((Get-Item "$game\Wow.exe").VersionInfo.FilePrivatePart -ne 12340) { throw 'Expected WoW 3.3.5a build 12340.' }
 $aws = 'C:\Program Files\Amazon\AWSCLIV2\aws.exe'
 $env:AWS_DEFAULT_REGION = $Region
 $token = Invoke-RestMethod -Method Put -Uri 'http://169.254.169.254/latest/api/token' -Headers @{'X-aws-ec2-metadata-token-ttl-seconds'='21600'}
 $Instance = Invoke-RestMethod 'http://169.254.169.254/latest/meta-data/instance-id' -Headers @{'X-aws-ec2-metadata-token'=$token}
-@{bucket=$Bucket; region=$Region; instance=$Instance} | ConvertTo-Json | Set-Content C:\viewer\settings.json
-
-Write-Output 'Installing Microsoft runtimes and the Direct3D software renderer.'
-Invoke-WebRequest -UseBasicParsing 'https://aka.ms/vs/17/release/vc_redist.x86.exe' -OutFile C:\viewer\vcredist.exe
-Start-Process C:\viewer\vcredist.exe -ArgumentList '/install /quiet /norestart' -Wait
-Invoke-WebRequest -UseBasicParsing 'https://download.microsoft.com/download/8/4/a/84a35bf1-dafe-4ae8-82af-ad2ae20b6b14/directx_Jun2010_redist.exe' -OutFile C:\viewer\directx.exe
-New-Item -ItemType Directory -Force C:\viewer\directx | Out-Null
-$p = Start-Process C:\viewer\directx.exe -ArgumentList '/Q /C /T:C:\viewer\directx' -Wait -PassThru
-if ($p.ExitCode) { throw 'DirectX extraction failed.' }
-$p = Start-Process C:\viewer\directx\DXSETUP.exe -ArgumentList '/silent' -Wait -PassThru
-if ($p.ExitCode) { throw 'DirectX installation failed.' }
-Invoke-WebRequest -UseBasicParsing 'https://www.7-zip.org/a/7zr.exe' -OutFile C:\viewer\7zr.exe
-Invoke-WebRequest -UseBasicParsing 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z' -OutFile C:\viewer\mesa.7z
-if ((Get-FileHash C:\viewer\mesa.7z -Algorithm SHA256).Hash.ToLower() -ne '351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695') { throw 'Mesa archive checksum mismatch.' }
-& C:\viewer\7zr.exe x C:\viewer\mesa.7z -oC:\viewer\mesa -y
-if ($LASTEXITCODE) { throw 'Mesa extraction failed.' }
-Invoke-WebRequest -UseBasicParsing 'https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/vulkan-runtime-components.zip' -OutFile C:\viewer\vulkan.zip
-if ((Get-FileHash C:\viewer\vulkan.zip -Algorithm SHA256).Hash.ToLower() -ne 'a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a') { throw 'Vulkan archive checksum mismatch.' }
-Expand-Archive C:\viewer\vulkan.zip C:\viewer\vulkan -Force
-Invoke-WebRequest -UseBasicParsing 'https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz' -OutFile C:\viewer\dxvk.tar.gz
-if ((Get-FileHash C:\viewer\dxvk.tar.gz -Algorithm SHA256).Hash.ToLower() -ne '40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608') { throw 'DXVK archive checksum mismatch.' }
-New-Item -ItemType Directory -Force C:\viewer\dxvk | Out-Null
-tar.exe -xf C:\viewer\dxvk.tar.gz -C C:\viewer\dxvk
-if ($LASTEXITCODE) { throw 'DXVK extraction failed.' }
-
-Write-Output 'Downloading and verifying the Windows 3.3.5a client (17.7 GB).'
-Invoke-WebRequest -UseBasicParsing 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip' -OutFile C:\viewer\aria2.zip
-Expand-Archive C:\viewer\aria2.zip C:\viewer\aria2 -Force
-& $aws s3 cp "s3://$Bucket/viewer/bootstrap/client.torrent" C:\viewer\client.torrent --only-show-errors
-if ($LASTEXITCODE) { throw 'Client torrent metadata download failed.' }
-if ((Get-FileHash C:\viewer\client.torrent -Algorithm SHA256).Hash.ToLower() -ne '58731d43da3e615fbeb489ebd7a9401a8b56eeed8b7baf72f6b57646c574f62e') { throw 'Client torrent metadata checksum mismatch.' }
-$aria = (Get-ChildItem C:\viewer\aria2 -Recurse -Filter aria2c.exe | Select-Object -First 1).FullName
-& $aria --torrent-file=C:\viewer\client.torrent --index-out=1=client.zip --dir=C:\viewer --seed-time=0 --max-upload-limit=8K --check-integrity=true --file-allocation=none --auto-file-renaming=false --allow-overwrite=true --max-connection-per-server=16 --split=16 --summary-interval=30 --enable-color=false 'https://btground.dedyn.io/chmi/ChromieCraft_3.3.5a.zip'
-if ($LASTEXITCODE) { throw 'Client download failed.' }
-if ((Get-Item C:\viewer\client.zip).Length -ne 17674749792) { throw 'Unexpected client archive size.' }
-Write-Output 'Extracting the client.'
-New-Item -ItemType Directory -Force C:\viewer\client | Out-Null
-& tar.exe -xf C:\viewer\client.zip -C C:\viewer\client
-if ($LASTEXITCODE) { throw 'Client extraction failed.' }
-$exe = Get-ChildItem C:\viewer\client -Recurse -Filter Wow.exe | Select-Object -First 1
-if (!$exe -or $exe.VersionInfo.FileVersion -notmatch '12340') { throw 'Expected WoW 3.3.5a build 12340.' }
-$game = $exe.DirectoryName
-Copy-Item C:\viewer\dxvk\dxvk-3.1.1\x32\d3d9.dll $game -Force
-Copy-Item C:\viewer\vulkan\VulkanRT-X64-1.4.363.0-Components\x86\vulkan-1.dll $game -Force
-New-Item -ItemType File -Force "$game\Wow.exe.local" | Out-Null
-$game | Set-Content C:\viewer\game-path.txt
-Get-ChildItem "$game\Data" -Recurse -Filter realmlist.wtf | ForEach-Object { 'set realmlist 127.0.0.1' | Set-Content $_.FullName -Encoding Ascii }
-New-Item -ItemType Directory -Force "$game\WTF" | Out-Null
-@'
-SET locale "enUS"
-SET realmList "127.0.0.1"
-SET accountName "WATCHER"
-SET gxWindow "1"
-SET gxResolution "1280x720"
-SET gxApi "D3D9"
-SET movie "0"
-SET readTOS "1"
-SET readEULA "1"
-SET readScanning "-1"
-SET readContest "-1"
-SET gameTip "0"
-SET accounttype "LK"
-SET maxFPS "30"
-SET maxFPSbk "15"
-SET gxCursor "0"
-'@ | Set-Content "$game\WTF\Config.wtf" -Encoding Ascii
+@{bucket=$Bucket; region=$Region; instance=$Instance; recipe=$Recipe} | ConvertTo-Json | Set-Content C:\viewer\settings.json
+$stop = New-ScheduledTaskAction -Execute shutdown.exe -Argument '/s /f /t 0'
+Register-ScheduledTask 'ViewerSafetyStop' -Action $stop -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(6)) -User SYSTEM -RunLevel Highest -Force | Out-Null
 
 # A short-lived desktop user; its random password never leaves this VM.
 $password = [Guid]::NewGuid().ToString('N') + '!aA1'
@@ -104,6 +30,8 @@ Set-ItemProperty $winlogon DefaultPassword $password
 $dcv = 'Registry::HKEY_USERS\S-1-5-18\Software\GSettings\com\nicesoftware\dcv'
 foreach ($key in @('security','session-management','session-management\automatic-console-session')) { New-Item "$dcv\$key" -Force | Out-Null }
 Set-ItemProperty "$dcv\security" authentication 'none'
+# Debugger disconnection must not lock an unattended broadcast desktop.
+New-ItemProperty "$dcv\security" -Name os-auto-lock -Value 0 -PropertyType DWord -Force | Out-Null
 New-ItemProperty "$dcv\session-management" -Name create-session -Value 1 -PropertyType DWord -Force | Out-Null
 Set-ItemProperty "$dcv\session-management\automatic-console-session" owner 'Viewer'
 Set-ItemProperty "$dcv\session-management\automatic-console-session" permissions-file 'C:\viewer\viewer.perm'
@@ -116,7 +44,26 @@ $aws='C:\Program Files\Amazon\AWSCLIV2\aws.exe'
 $env:Path += ';C:\Program Files\Amazon\SessionManagerPlugin\bin'
 $s=Get-Content C:\viewer\settings.json | ConvertFrom-Json
 $env:AWS_DEFAULT_REGION=$s.region
-$ready=@{desktop_ready=$true;instance=$s.instance;updated_at=(Get-Date).ToUniversalTime().ToString('o')}
+# DCV display management requires the system task, even for the session owner.
+for ($i=0; $i -lt 30; $i++) {
+    & 'C:\Program Files\NICE\DCV\Server\bin\dcv.exe' set-display-layout --session console '1920x1080' >C:\viewer\display.log 2>C:\viewer\display.err
+    if ($LASTEXITCODE -eq 0) { New-Item -ItemType File -Force C:\viewer\display-ready.flag | Out-Null; break }
+    Start-Sleep 2
+}
+# The desktop task confirms that the client has a working Direct3D window.
+for ($attempt=0; $attempt -lt 120; $attempt++) {
+    if (Test-Path C:\viewer\client-ready.flag) { break }
+    Start-Sleep 5
+}
+if ($attempt -eq 120) {
+    @{error='Client desktop did not become ready; inspect play.log.'} | ConvertTo-Json | Set-Content C:\viewer\failed.json
+    & $aws s3 cp C:\viewer\failed.json "s3://$($s.bucket)/viewer/$($s.instance)/failed.json" --only-show-errors
+    exit 1
+}
+$ready=@{desktop_ready=$true;instance=$s.instance;recipe=$s.recipe;updated_at=(Get-Date).ToUniversalTime().ToString('o')}
+# A recovered startup supersedes the previous failure marker in S3.
+[IO.File]::WriteAllText('C:\viewer\failed.json','null')
+& $aws s3 cp C:\viewer\failed.json "s3://$($s.bucket)/viewer/$($s.instance)/failed.json" --only-show-errors
 $ready | ConvertTo-Json | Set-Content C:\viewer\ready.json
 & $aws s3 cp C:\viewer\ready.json "s3://$($s.bucket)/viewer/$($s.instance)/ready.json" --only-show-errors
 $deadline=(Get-Date).AddHours(6)
@@ -152,44 +99,93 @@ Stop-Computer -Force
 # Launch the full client inside the interactive desktop, never in session zero.
 @'
 $ErrorActionPreference='Stop'
-$env:VK_DRIVER_FILES='C:\viewer\mesa\x86\lvp_icd.x86.json'
-$env:DXVK_FILTER_DEVICE_NAME='llvmpipe'
 Add-Content C:\viewer\play.log 'Starting the full Windows client.'
+for ($i=0; $i -lt 60 -and !(Test-Path C:\viewer\display-ready.flag); $i++) { Start-Sleep 2 }
+if (!(Test-Path C:\viewer\display-ready.flag)) { throw 'Desktop display did not become ready; inspect display.err.' }
 $game=(Get-Content C:\viewer\game-path.txt).Trim()
-$p=Start-Process "$game\Wow.exe" -WorkingDirectory $game -PassThru
+$config=Get-Content "$game\WTF\Config.wtf" | Where-Object {$_ -notmatch '^SET (accountName|gxResolution|showTutorials|Sound_EnableSoundWhenGameIsInBG) '}
+@($config; 'SET accountName "WATCHER"'; 'SET gxResolution "1280x720"'; 'SET showTutorials "0"'; 'SET Sound_EnableSoundWhenGameIsInBG "1"') | Set-Content "$game\WTF\Config.wtf" -Encoding Ascii
+$p=Get-Process Wow -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq (Get-Process -Id $PID).SessionId} | Select-Object -First 1
+if (!$p) { $p=Start-Process "$game\Wow.exe" -WorkingDirectory $game -PassThru }
 Add-Content C:\viewer\play.log ("Client process: " + $p.Id)
-Start-Sleep 45
-if ($p.HasExited) {
-    Add-Content C:\viewer\play.log ("Client startup exit: " + $p.ExitCode)
-    exit 1
-}
 Add-Type -TypeDefinition @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class ViewerWindow {
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
   [DllImport("user32.dll", CharSet=CharSet.Auto)]
   public static extern int GetClassName(IntPtr window, StringBuilder text, int count);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+  public static bool FocusPassword(IntPtr window) {
+    if (GetForegroundWindow() != window) return false;
+    Rect rect;
+    if (!GetClientRect(window, out rect) || rect.Right < 640 || rect.Bottom < 480) return false;
+    // The 3.3.5 login form scales with the client area; avoid relying on tab focus.
+    Point point = new Point { X = rect.Right / 2, Y = (int)(rect.Bottom * 0.615) };
+    if (!ClientToScreen(window, ref point)) return false;
+    if (!SetCursorPos(point.X, point.Y)) return false;
+    mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+    mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+    return true;
+  }
 }
 "@
-$p.Refresh()
-$windowClass=New-Object System.Text.StringBuilder 128
-[ViewerWindow]::GetClassName($p.MainWindowHandle,$windowClass,128) | Out-Null
+# The first GPU desktop can take several minutes to create its window.
+# Inspect readiness instead of treating a single early sample as failure.
+$windowDeadline=(Get-Date).AddMinutes(5)
+do {
+    $p.Refresh()
+    if ($p.HasExited) {
+        Add-Content C:\viewer\play.log ("Client startup exit: " + $p.ExitCode)
+        exit 1
+    }
+    $windowClass=New-Object System.Text.StringBuilder 128
+    [ViewerWindow]::GetClassName($p.MainWindowHandle,$windowClass,128) | Out-Null
+    if ($windowClass.ToString() -eq 'GxWindowClassD3d') { break }
+    Start-Sleep 5
+} while ((Get-Date) -lt $windowDeadline)
 Add-Content C:\viewer\play.log ("Client window class: " + $windowClass.ToString())
 if ($windowClass.ToString() -ne 'GxWindowClassD3d') {
     Add-Content C:\viewer\play.log 'Client startup needs a visual check; automatic login skipped.'
     exit 1
 }
+New-Item -ItemType File -Force C:\viewer\client-ready.flag | Out-Null
 $shell=New-Object -ComObject WScript.Shell
 while (!(Test-Path C:\viewer\account.json)) {
     if ($p.HasExited) { exit 1 }
     Start-Sleep 5
 }
 $account=Get-Content C:\viewer\account.json | ConvertFrom-Json
+for ($attempt=0; $attempt -lt 30; $attempt++) {
+    $portsReady=$true
+    foreach ($port in @(3724,8085)) {
+        $tcp=[Net.Sockets.TcpClient]::new()
+        try { $tcp.Connect('127.0.0.1',$port) } catch { $portsReady=$false } finally { $tcp.Dispose() }
+    }
+    if ($portsReady) { break }
+    Start-Sleep 1
+}
+if (!$portsReady) { throw 'Game tunnels did not become ready.' }
 if ($shell.AppActivate($p.Id)) {
-    # With a remembered account, the client's initial focus is the password box.
+    Start-Sleep 1
+    if (![ViewerWindow]::FocusPassword($p.MainWindowHandle)) { throw 'Could not focus the game password field.' }
+    Start-Sleep -Milliseconds 250
+    $shell.SendKeys('^a')
     $shell.SendKeys($account.password)
     $shell.SendKeys('{ENTER}')
+    Add-Content C:\viewer\play.log 'Spectator login submitted.'
+    # The isolated WATCHER account has exactly one character. Enter its character
+    # selection after authentication so a broadcast does not need a DCV operator.
+    Start-Sleep 30
+    if (!$p.HasExited -and $shell.AppActivate($p.Id)) { Start-Sleep 1; $shell.SendKeys('{ENTER}'); Add-Content C:\viewer\play.log 'Character entry requested.' }
+} else {
+    throw 'Could not focus the game for automatic login; check whether the desktop is locked.'
 }
 '@ | Set-Content C:\viewer\play.ps1
 
@@ -198,8 +194,12 @@ Register-ScheduledTask 'AgentWowTunnels' -Action $action -Trigger (New-Scheduled
 $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\viewer\play.ps1'
 $principal=New-ScheduledTaskPrincipal -UserId Viewer -LogonType Interactive
 Register-ScheduledTask 'AgentWowClient' -Action $action -Trigger (New-ScheduledTaskTrigger -AtLogOn -User Viewer) -Principal $principal -Force | Out-Null
+$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\viewer\obs.ps1'
+Register-ScheduledTask 'AgentWowOBS' -Action $action -Trigger (New-ScheduledTaskTrigger -AtLogOn -User Viewer) -Principal $principal -Force | Out-Null
+$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\viewer\watch.ps1'
+Register-ScheduledTask 'AgentWowWatch' -Action $action -Trigger (New-ScheduledTaskTrigger -AtLogOn -User Viewer) -Principal $principal -Force | Out-Null
 & icacls.exe C:\viewer /grant 'Viewer:(OI)(CI)M' /T /Q | Out-Null
-Write-Output 'Windows viewer setup complete; rebooting to activate graphics and the desktop.'
+Write-Output 'Viewer configured from the saved image; rebooting into its private desktop.'
 New-Item -ItemType File -Force C:\viewer\configured.flag | Out-Null
 Stop-Transcript
 & $aws s3 cp C:\viewer\setup.log "s3://$Bucket/viewer/$Instance/setup.log" --only-show-errors

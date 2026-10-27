@@ -73,6 +73,10 @@ resource "aws_iam_role_policy" "viewer" {
       { Effect = "Allow", Action = "s3:GetObject", Resource = ["arn:aws:s3:::dcv-license.${var.aws_region}/*"] },
       { Effect = "Allow", Action = "batch:DescribeJobs", Resource = "*" },
       {
+        Effect   = "Allow", Action = "secretsmanager:GetSecretValue"
+        Resource = "arn:${var.partition}:secretsmanager:${var.aws_region}:${data.aws_caller_identity.viewer.account_id}:secret:agent-wow/viewer/twitch/*"
+      },
+      {
         Effect    = "Allow", Action = "ssm:StartSession"
         Resource  = ["arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.viewer.account_id}:instance/*"]
         Condition = { StringEquals = { "ssm:resourceTag/ViewerEnabled" = "true" } }
@@ -101,7 +105,7 @@ resource "aws_ssm_document" "viewer_ports" {
 }
 resource "aws_launch_template" "viewer" {
   name_prefix                          = "agent-wow-viewer-"
-  instance_type                        = "m6a.2xlarge"
+  instance_type                        = "g4dn.xlarge"
   instance_initiated_shutdown_behavior = "terminate"
   vpc_security_group_ids               = [var.security_group_id]
   iam_instance_profile { arn = aws_iam_instance_profile.viewer.arn }
